@@ -1,0 +1,13 @@
+{
+  "name": "jev-trolley-switch",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Interactive Trolley Problem switchboard powered by Pollinations POST /alpha/decisions and TypeSafe Jev (choice, noul, score) with BYOP.",
+  "license": "ISC",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiaotian1171/jev-trolley-switch.git"
+  },
+  "homepage": "https://xiaotian1171.github.io/jev-trolley-switch/"
+}
