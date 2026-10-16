@@ -216,35 +216,23 @@ export function buildDecisionRequest(round, order = "o1", model = MODELS.primary
 	};
 }
 
-function normalizeFreeFallbackAnswer(data, baselineFallback) {
+let telemetryViewMode = "live";
+
+function formatFreeFallbackAnswer(data) {
+	// Keep live fallback-model answers strictly separate from cached Jev examples:
+	// respan/span-01-lite only answers `noul` questions and never inherits cached Jev choice/score.
 	const pRaw = Number(data?.answers?.pull_noul?.noul ?? 0.5);
 	const sRaw = Number(data?.answers?.stay_noul?.noul ?? 0.5);
-	const sum = pRaw + sRaw || 1;
-	const pullProb = Math.max(0, Math.min(1, pRaw / sum));
-	const stayProb = Math.max(0, Math.min(1, 1 - pullProb));
-	const choice = pullProb >= stayProb ? "pull" : "stay";
-	const confidence = Math.abs(pullProb - stayProb);
-	const scoreEst = Number((pullProb * 4).toFixed(2));
 	return {
-		id: data?.id || "dec-free-fallback",
+		id: data?.id || "dec-fallback-live",
 		model: data?.model || MODELS.freeFallback,
-		provider: data?.provider || "Respan (Free-Tier /alpha/decisions Fallback)",
+		provider: data?.provider || "respan (Quest-Pollen /alpha/decisions fallback · noul only)",
 		usage: data?.usage || { input_tokens: 0, output_tokens: 0 },
 		answers: {
-			decision: {
-				type: "choice",
-				choice,
-				confidence,
-				probabilities: { pull: pullProb, stay: stayProb },
-			},
+			decision: null,
 			pull_noul: { type: "noul", noul: pRaw },
 			stay_noul: { type: "noul", noul: sRaw },
-			ethics_score: baselineFallback?.answers?.ethics_score || {
-				type: "score",
-				score: scoreEst,
-				confidence,
-				probabilities: { "0": 0.05, "1": 0.1, "2": 0.25, "3": 0.4, "4": 0.2 },
-			},
+			ethics_score: null,
 		},
 	};
 }
@@ -266,7 +254,7 @@ async function querySingleOrder(round, order) {
 	if (res.status === 401 || res.status === 403) {
 		throw new Error("Your Pollen key was rejected or expired. Please reconnect.");
 	}
-	// Automatic free-tier fallback on /alpha/decisions when typesafe/jev-1.13 requires Paid Pollen (402)
+	// Automatic Quest-Pollen fallback on /alpha/decisions when typesafe/jev-1.13 requires Paid Pollen (402)
 	const fallbackReq = buildDecisionRequest(round, order, MODELS.freeFallback);
 	const fbRes = await fetch(`${API_BASE}/alpha/decisions`, {
 		method: "POST",
@@ -280,32 +268,18 @@ async function querySingleOrder(round, order) {
 		throw new Error(`/alpha/decisions returned HTTP ${fbRes.status}.`);
 	}
 	const fbData = await fbRes.json();
-	const baseRef = order === "o2" ? round.jev_o2 : round.jev_o1;
-	const normalized = normalizeFreeFallbackAnswer(fbData, baseRef);
-	const response =
-		round.id === "custom-lab"
-			? normalized
-			: {
-					...baseRef,
-					freeTierReceipt: {
-						id: fbData.id,
-						model: fbData.model,
-						answers: fbData.answers,
-						usage: fbData.usage,
-					},
-				};
 	return {
 		mode: "free-live",
 		request: fallbackReq,
-		response,
+		response: formatFreeFallbackAnswer(fbData),
 	};
 }
 
-function getActiveTelemetry(round) {
-	const live = liveResults[round.id];
-	if (live) return live;
+function getCachedTelemetry(round) {
 	return {
-		source: "VERIFIED JEV-1.13.0 TELEMETRY (PRE-RECORDED)",
+		mode: "cached",
+		source: "CACHED JEV-1.13.0 EXAMPLE (PRE-RECORDED ARTICLE TELEMETRY)",
+		modelLabel: "typesafe/jev-1.13 (cached jev-1.13.0 example)",
 		o1: {
 			request: buildDecisionRequest(round, "o1", MODELS.primary),
 			response: round.jev_o1,
@@ -315,6 +289,12 @@ function getActiveTelemetry(round) {
 			response: round.jev_o2,
 		},
 	};
+}
+
+function getActiveTelemetry(round) {
+	const live = liveResults[round.id];
+	if (live && telemetryViewMode === "live") return live;
+	return getCachedTelemetry(round);
 }
 
 function renderSvgTargets(container, trackInfo) {
@@ -380,6 +360,13 @@ function animateSwitchAndTrolley(action) {
 	}
 }
 
+function getVerdictDirection(ans) {
+	if (ans?.decision?.choice) return ans.decision.choice;
+	const p = Number(ans?.pull_noul?.noul ?? 0.5);
+	const s = Number(ans?.stay_noul?.noul ?? 0.5);
+	return p >= s ? "pull" : "stay";
+}
+
 function updateAgreementHeader() {
 	let total = 0;
 	let matches = 0;
@@ -388,10 +375,10 @@ function updateAgreementHeader() {
 		if (!pick) continue;
 		total++;
 		const tele = getActiveTelemetry(r);
-		const jevPick = tele[activeOrder].response.answers.decision.choice;
-		if (pick === jevPick) matches++;
+		const modelPick = getVerdictDirection(tele[activeOrder].response.answers);
+		if (pick === modelPick) matches++;
 	}
-	$("agreementPill").innerHTML = `AGREEMENT WITH JEV: <b>${matches} / ${total}</b>`;
+	$("agreementPill").innerHTML = `AGREEMENT: <b>${matches} / ${total}</b>`;
 }
 
 function renderTabs() {
@@ -414,12 +401,20 @@ function renderTabs() {
 function render() {
 	renderTabs();
 	const round = ALL_ROUNDS[activeIndex];
+	const hasLiveForRound = Boolean(liveResults[round.id]);
+	$("telemetryModeWrap").hidden = !hasLiveForRound;
+	$("modeLiveBtn").classList.toggle("active", telemetryViewMode === "live");
+	$("modeCachedBtn").classList.toggle("active", telemetryViewMode === "cached");
+
 	const tele = getActiveTelemetry(round);
 	const currentPack = tele[activeOrder];
 	const ans = currentPack.response.answers;
 	const d = ans.decision;
-	const dO1 = tele.o1.response.answers.decision;
-	const dO2 = tele.o2.response.answers.decision;
+	const ansO1 = tele.o1.response.answers;
+	const ansO2 = tele.o2.response.answers;
+	const dO1 = ansO1.decision;
+	const dO2 = ansO2.decision;
+	const isFallbackOnly = tele.mode === "free-live";
 
 	$("roundBadge").textContent = round.badge;
 	$("roundTitle").textContent = `${round.number} · ${round.title}`;
@@ -431,8 +426,8 @@ function render() {
 
 	$("promptOrderTag").textContent =
 		activeOrder === "o1"
-			? "STATE SENT TO JEV (o1 · MAIN TRACK DESCRIBED FIRST)"
-			: "STATE SENT TO JEV (o2 · SIDE TRACK / SERVER DESCRIBED FIRST)";
+			? "STATE SENT TO /alpha/decisions (o1 · MAIN TRACK DESCRIBED FIRST)"
+			: "STATE SENT TO /alpha/decisions (o2 · SIDE TRACK / SERVER DESCRIBED FIRST)";
 	$("stateText").textContent = buildStateForRound(round, activeOrder);
 
 	$("svgMainLabel").textContent = `MAIN TRACK · ${round.mainTrack.label.toUpperCase()} (STAY)`;
@@ -440,10 +435,18 @@ function render() {
 	renderSvgTargets($("svgMainTargets"), round.mainTrack);
 	renderSvgTargets($("svgSideTargets"), round.sideTrack);
 
-	const pullPct = Math.round((d.probabilities.pull ?? 0) * 100);
-	const stayPct = Math.round((d.probabilities.stay ?? 0) * 100);
-	$("svgPullProb").textContent = `PULL ${pullPct}%`;
-	$("svgStayProb").textContent = `STAY ${stayPct}%`;
+	const nPull = Number(ans.pull_noul?.noul ?? 0);
+	const nStay = Number(ans.stay_noul?.noul ?? 0);
+
+	if (d) {
+		const pullPct = Math.round((d.probabilities.pull ?? 0) * 100);
+		const stayPct = Math.round((d.probabilities.stay ?? 0) * 100);
+		$("svgPullProb").textContent = `PULL ${pullPct}%`;
+		$("svgStayProb").textContent = `STAY ${stayPct}%`;
+	} else {
+		$("svgPullProb").textContent = `NOUL ${nPull.toFixed(2)}`;
+		$("svgStayProb").textContent = `NOUL ${nStay.toFixed(2)}`;
+	}
 
 	const userPick = userChoices[round.id] || null;
 	$("btnPull").classList.toggle("selected", userPick === "pull");
@@ -451,59 +454,95 @@ function render() {
 	animateSwitchAndTrolley(userPick);
 
 	$("sourceBadge").textContent = tele.source;
+	$("modelLabel").textContent = tele.modelLabel || currentPack.response.model;
+	$("modelVerdictLabel").textContent =
+		tele.mode === "jev-live"
+			? "LIVE JEV (`choice`)"
+			: isFallbackOnly
+				? "LIVE FALLBACK (`noul`)"
+				: "CACHED JEV (`choice`)";
+
+	const modelDir = getVerdictDirection(ans);
 	if (userPick) {
-		const same = userPick === d.choice;
+		const same = userPick === modelDir;
 		$("userVerdict").textContent = userPick.toUpperCase();
 		$("userVerdict").style.color = same ? "#10b981" : "#f59e0b";
 		$("userVerdictSub").textContent = same
-			? "Matches Jev’s choice on this order"
-			: "Diverges from Jev’s choice on this order";
+			? `Matches ${isFallbackOnly ? "fallback noul direction" : "Jev’s choice"} on this order`
+			: `Diverges from ${isFallbackOnly ? "fallback noul direction" : "Jev’s choice"} on this order`;
 	} else {
 		$("userVerdict").textContent = "WAITING…";
 		$("userVerdict").style.color = "#f59e0b";
 		$("userVerdictSub").textContent = "Pull or leave the lever on the left";
 	}
 
-	$("jevVerdict").textContent = `${d.choice.toUpperCase()} (${d.choice === "pull" ? pullPct : stayPct}%)`;
-	$("jevConfSub").textContent = `Confidence: ${Number(d.confidence ?? 0).toFixed(2)}`;
+	if (d) {
+		const pullPct = Math.round((d.probabilities.pull ?? 0) * 100);
+		const stayPct = Math.round((d.probabilities.stay ?? 0) * 100);
+		$("jevVerdict").textContent = `${d.choice.toUpperCase()} (${d.choice === "pull" ? pullPct : stayPct}%)`;
+		$("jevConfSub").textContent = `Confidence: ${Number(d.confidence ?? 0).toFixed(2)} · ${tele.modelLabel}`;
 
-	const flipped = dO1.choice !== dO2.choice;
-	const deltaPct = Math.round(Math.abs((dO1.probabilities.pull ?? 0) - (dO2.probabilities.pull ?? 0)) * 100);
-	$("flipVerdict").textContent = flipped ? `FLIPPED! (Δ ${deltaPct}%)` : `STABLE (Δ ${deltaPct}%)`;
-	$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
-	$("flipSub").textContent = flipped
-		? `o1 picks ${dO1.choice.toUpperCase()}, o2 flips to ${dO2.choice.toUpperCase()}`
-		: `Both o1 & o2 pick ${dO1.choice.toUpperCase()}`;
+		const flipped = dO1.choice !== dO2.choice;
+		const deltaPct = Math.round(Math.abs((dO1.probabilities.pull ?? 0) - (dO2.probabilities.pull ?? 0)) * 100);
+		$("flipVerdict").textContent = flipped ? `FLIPPED! (Δ ${deltaPct}%)` : `STABLE (Δ ${deltaPct}%)`;
+		$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
+		$("flipSub").textContent = flipped
+			? `o1 picks ${dO1.choice.toUpperCase()}, o2 flips to ${dO2.choice.toUpperCase()}`
+			: `Both o1 & o2 pick ${dO1.choice.toUpperCase()}`;
 
-	$("choiceSummary").textContent = `pull: ${pullPct}% · stay: ${stayPct}%`;
-	$("barPull").style.width = `${Math.max(8, pullPct)}%`;
-	$("barPull").innerHTML = `<span>PULL ${pullPct}%</span>`;
-	$("barStay").style.width = `${Math.max(8, stayPct)}%`;
-	$("barStay").innerHTML = `<span>STAY ${stayPct}%</span>`;
+		$("choiceSummary").textContent = `pull: ${pullPct}% · stay: ${stayPct}%`;
+		$("barPull").style.width = `${Math.max(8, pullPct)}%`;
+		$("barPull").innerHTML = `<span>PULL ${pullPct}%</span>`;
+		$("barStay").style.width = `${Math.max(8, stayPct)}%`;
+		$("barStay").innerHTML = `<span>STAY ${stayPct}%</span>`;
 
-	const o1Pull = Math.round((dO1.probabilities.pull ?? 0) * 100);
-	const o2Pull = Math.round((dO2.probabilities.pull ?? 0) * 100);
-	$("chipO1").innerHTML = `o1 (Main first): <b>${dO1.choice.toUpperCase()} (pull ${o1Pull}%)</b>`;
-	$("chipO2").innerHTML = `o2 (Side first): <b>${dO2.choice.toUpperCase()} (pull ${o2Pull}%)</b>`;
+		const o1Pull = Math.round((dO1.probabilities.pull ?? 0) * 100);
+		const o2Pull = Math.round((dO2.probabilities.pull ?? 0) * 100);
+		$("chipO1").innerHTML = `o1 (Main first): <b>${dO1.choice.toUpperCase()} (pull ${o1Pull}%)</b>`;
+		$("chipO2").innerHTML = `o2 (Side first): <b>${dO2.choice.toUpperCase()} (pull ${o2Pull}%)</b>`;
+	} else {
+		$("jevVerdict").textContent = `${modelDir.toUpperCase()} (noul ${nPull.toFixed(2)} vs ${nStay.toFixed(2)})`;
+		$("jevConfSub").textContent = `Model: ${MODELS.freeFallback} (noul-only; no choice/score)`;
 
-	const nPull = Number(ans.pull_noul?.noul ?? 0);
-	const nStay = Number(ans.stay_noul?.noul ?? 0);
+		const dir1 = getVerdictDirection(ansO1);
+		const dir2 = getVerdictDirection(ansO2);
+		const flipped = dir1 !== dir2;
+		const p1 = Number(ansO1.pull_noul?.noul ?? 0);
+		const p2 = Number(ansO2.pull_noul?.noul ?? 0);
+		$("flipVerdict").textContent = flipped ? "NOUL FLIPPED" : "NOUL STABLE";
+		$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
+		$("flipSub").textContent = `o1 pull_noul=${p1.toFixed(2)}, o2 pull_noul=${p2.toFixed(2)} (${MODELS.freeFallback})`;
+
+		$("choiceSummary").textContent = `Not returned by ${MODELS.freeFallback} (noul-only model)`;
+		$("barPull").style.width = "50%";
+		$("barPull").innerHTML = "<span>N/A (NOUL-ONLY MODEL)</span>";
+		$("barStay").style.width = "50%";
+		$("barStay").innerHTML = "<span>SWITCH TO CACHED JEV ABOVE FOR CHOICE</span>";
+		$("chipO1").innerHTML = `o1 (${MODELS.freeFallback}): <b>pull_noul ${p1.toFixed(2)}</b>`;
+		$("chipO2").innerHTML = `o2 (${MODELS.freeFallback}): <b>pull_noul ${p2.toFixed(2)}</b>`;
+	}
+
 	$("noulPullVal").textContent = nPull.toFixed(2);
 	$("noulStayVal").textContent = nStay.toFixed(2);
 	$("noulPullBar").style.width = `${Math.round(nPull * 100)}%`;
 	$("noulStayBar").style.width = `${Math.round(nStay * 100)}%`;
-	$("noulSumNote").textContent = `Sum = ${(nPull + nStay).toFixed(2)} (independent yes/no propositions)`;
+	$("noulSumNote").textContent = `Sum = ${(nPull + nStay).toFixed(2)} · Model: ${currentPack.response.model}`;
 
-	const scObj = ans.ethics_score || { score: 0, probabilities: {} };
-	$("scoreVal").textContent = `${Number(scObj.score ?? 0).toFixed(2)} / 4.00`;
-	$("scoreRungs").innerHTML = RUNG_LABELS.map((label, idx) => {
-		const p = Math.round(Number(scObj.probabilities?.[String(idx)] ?? 0) * 100);
-		return `<div class="rung-row">
+	const scObj = ans.ethics_score;
+	if (scObj) {
+		$("scoreVal").textContent = `${Number(scObj.score ?? 0).toFixed(2)} / 4.00`;
+		$("scoreRungs").innerHTML = RUNG_LABELS.map((label, idx) => {
+			const p = Math.round(Number(scObj.probabilities?.[String(idx)] ?? 0) * 100);
+			return `<div class="rung-row">
       <span>${label}</span>
       <div class="rung-bar"><span style="width: ${p}%"></span></div>
       <span class="rung-pct">${p}%</span>
     </div>`;
-	}).join("");
+		}).join("");
+	} else {
+		$("scoreVal").textContent = `N/A on ${MODELS.freeFallback}`;
+		$("scoreRungs").innerHTML = `<div class="rung-row"><span><code>${MODELS.freeFallback}</code> only supports <code>type: "noul"</code>. Cached <code>typesafe/jev-1.13</code> scores are kept separate (click "Cached Jev Example" above to compare).</span></div>`;
+	}
 
 	$("humanNoteText").textContent = round.humanNote;
 	$("jsonDump").textContent = JSON.stringify(
@@ -524,19 +563,29 @@ function chooseAction(action) {
 	const round = ALL_ROUNDS[activeIndex];
 	userChoices[round.id] = action;
 	const tele = getActiveTelemetry(round);
-	const d = tele[activeOrder].response.answers.decision;
+	const ans = tele[activeOrder].response.answers;
+	const d = ans.decision;
+	const modelDir = getVerdictDirection(ans);
 	sessionLog.push({
 		timestamp: new Date().toISOString(),
 		roundId: round.id,
 		order: activeOrder,
+		model: tele[activeOrder].response.model,
+		mode: tele.mode,
 		userChoice: action,
-		jevChoice: d.choice,
-		jevPullProbability: d.probabilities.pull,
+		modelDirection: modelDir,
+		jevPullProbability: d ? d.probabilities.pull : null,
 	});
 	render();
-	setStatus(
-		`You chose <b>${action.toUpperCase()}</b>. On order <code>${activeOrder}</code>, Jev chose <b>${d.choice.toUpperCase()}</b> (${Math.round((d.probabilities[d.choice] ?? 0) * 100)}% probability).`,
-	);
+	if (d) {
+		setStatus(
+			`You chose <b>${action.toUpperCase()}</b>. On order <code>${activeOrder}</code>, <code>${tele.modelLabel}</code> chose <b>${d.choice.toUpperCase()}</b> (${Math.round((d.probabilities[d.choice] ?? 0) * 100)}% probability).`,
+		);
+	} else {
+		setStatus(
+			`You chose <b>${action.toUpperCase()}</b>. On order <code>${activeOrder}</code>, live fallback <code>${MODELS.freeFallback}</code> returned <code>pull_noul=${Number(ans.pull_noul?.noul ?? 0).toFixed(2)}</code>, <code>stay_noul=${Number(ans.stay_noul?.noul ?? 0).toFixed(2)}</code>.`,
+		);
+	}
 }
 
 async function runLiveDecision() {
@@ -554,11 +603,17 @@ async function runLiveDecision() {
 			querySingleOrder(round, "o1"),
 			querySingleOrder(round, "o2"),
 		]);
+		telemetryViewMode = "live";
 		liveResults[round.id] = {
+			mode: r1.mode,
 			source:
 				r1.mode === "jev-live"
-					? "LIVE POLLINATIONS /alpha/decisions · typesafe/jev-1.13"
-					: "LIVE POLLINATIONS /alpha/decisions · respan/span-01-lite (FREE-TIER FALLBACK)",
+					? "LIVE /alpha/decisions RESPONSE · typesafe/jev-1.13"
+					: "LIVE /alpha/decisions FALLBACK · respan/span-01-lite (NOUL ONLY)",
+			modelLabel:
+				r1.mode === "jev-live"
+					? "typesafe/jev-1.13 (live response)"
+					: "respan/span-01-lite (live fallback · noul only)",
 			o1: { request: r1.request, response: r1.response },
 			o2: { request: r2.request, response: r2.response },
 		};
@@ -566,7 +621,7 @@ async function runLiveDecision() {
 		setStatus(
 			r1.mode === "jev-live"
 				? "Live <code>typesafe/jev-1.13</code> response received for both o1 and o2."
-				: "Live <code>/alpha/decisions</code> response received via free-tier <code>respan/span-01-lite</code> fallback (your account has 0 Paid Pollen for <code>typesafe/jev-1.13</code>).",
+				: "Live <code>respan/span-01-lite</code> (noul-only fallback) response received. Cached <code>jev-1.13.0</code> examples are kept separate—use the toggle in the right panel to compare.",
 		);
 	} catch (err) {
 		setStatus(err.message || "Live /alpha/decisions request failed.", true);
@@ -585,6 +640,14 @@ $("orderO1").addEventListener("click", () => {
 });
 $("orderO2").addEventListener("click", () => {
 	activeOrder = "o2";
+	render();
+});
+$("modeLiveBtn").addEventListener("click", () => {
+	telemetryViewMode = "live";
+	render();
+});
+$("modeCachedBtn").addEventListener("click", () => {
+	telemetryViewMode = "cached";
 	render();
 });
 $("swapOrderQuick").addEventListener("click", () => {

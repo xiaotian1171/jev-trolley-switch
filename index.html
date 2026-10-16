@@ -168,9 +168,13 @@
       <section class="telemetry-card" aria-label="Jev decision telemetry and order-reversal comparison">
         <div class="card-head">
           <div>
-            <span class="badge badge-cyan" id="sourceBadge">VERIFIED JEV-1.13.0 TELEMETRY</span>
+            <span class="badge badge-cyan" id="sourceBadge">CACHED JEV-1.13.0 EXAMPLE</span>
             <h2>Typed Judgment Breakdown</h2>
-            <p>Three independent typed questions evaluated on the exact same <code>state</code></p>
+            <p id="modelLabelLine">Model: <code id="modelLabel">typesafe/jev-1.13 (cached jev-1.13.0 example)</code></p>
+          </div>
+          <div class="order-toggle" id="telemetryModeWrap" hidden>
+            <button id="modeLiveBtn" class="order-btn active" type="button">Live Answer</button>
+            <button id="modeCachedBtn" class="order-btn" type="button">Cached Jev Example</button>
           </div>
         </div>
 
@@ -181,7 +185,7 @@
             <small id="userVerdictSub">Commit a move on the left</small>
           </div>
           <div class="verdict-box">
-            <span>JEV (`choice`)</span>
+            <span id="modelVerdictLabel">CACHED JEV (`choice`)</span>
             <strong id="jevVerdict">PULL (97%)</strong>
             <small id="jevConfSub">Confidence: 0.94</small>
           </div>
