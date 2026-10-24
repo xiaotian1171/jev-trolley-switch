@@ -29,6 +29,7 @@ Instead of generating free-form chat text, **Jev (`typesafe/jev-1.13`)** on Poll
 - **Playable Immediately Before Sign-In**: All 6 curated scenarios include verified `jev-1.13.0` (`typesafe/jev-1.13`) responses for both `o1` (Main track first) and `o2` (Side track / Server first).
 - **BYOP Browser Fragment Flow**: Clicking **CONNECT POLLEN** redirects to `https://enter.pollinations.ai/authorize` with `redirect_uri = location.origin + location.pathname`, validates the `state` nonce, strips the `#api_key` fragment immediately, and keeps the token only in `sessionStorage`. No API keys are bundled in the repository.
 - **Paid + Quest-Pollen `/alpha/decisions` Support (Strict Telemetry Separation)**: Live requests call `POST https://gen.pollinations.ai/alpha/decisions` with `model: "typesafe/jev-1.13"` first. If the visitor's account only has Quest Pollen (`HTTP 402` on `typesafe/jev-1.13`), the lab falls back to `respan/span-01-lite` (`noul`-only) and displays the live `respan/span-01-lite (live fallback · noul only)` answer strictly separate from the cached `typesafe/jev-1.13 (cached jev-1.13.0 example)` baseline via an explicit view toggle and model label.
+- **Mixed-Model Guard**: If one order resolves to `typesafe/jev-1.13` and the other only to the `noul`-only fallback, the order-flip card reports `NOT COMPARABLE` instead of comparing a `choice` probability with a `noul` score. Each chip keeps its own model label, and the cached-vs-live toggle still works.
 
 ## Run Locally
 

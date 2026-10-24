@@ -281,10 +281,12 @@ function getCachedTelemetry(round) {
 		source: "CACHED JEV-1.13.0 EXAMPLE (PRE-RECORDED ARTICLE TELEMETRY)",
 		modelLabel: "typesafe/jev-1.13 (cached jev-1.13.0 example)",
 		o1: {
+			mode: "cached",
 			request: buildDecisionRequest(round, "o1", MODELS.primary),
 			response: round.jev_o1,
 		},
 		o2: {
+			mode: "cached",
 			request: buildDecisionRequest(round, "o2", MODELS.primary),
 			response: round.jev_o2,
 		},
@@ -295,6 +297,12 @@ function getActiveTelemetry(round) {
 	const live = liveResults[round.id];
 	if (live && telemetryViewMode === "live") return live;
 	return getCachedTelemetry(round);
+}
+
+function getPackModelLabel(pack, tele) {
+	if (pack.mode === "jev-live") return "typesafe/jev-1.13 (live response)";
+	if (pack.mode === "free-live") return "respan/span-01-lite (live fallback · noul only)";
+	return tele.modelLabel || pack.response.model;
 }
 
 function renderSvgTargets(container, trackInfo) {
@@ -414,7 +422,7 @@ function render() {
 	const ansO2 = tele.o2.response.answers;
 	const dO1 = ansO1.decision;
 	const dO2 = ansO2.decision;
-	const isFallbackOnly = tele.mode === "free-live";
+	const isFallbackOnly = (currentPack.mode || tele.mode) === "free-live";
 
 	$("roundBadge").textContent = round.badge;
 	$("roundTitle").textContent = `${round.number} · ${round.title}`;
@@ -455,8 +463,9 @@ function render() {
 
 	$("sourceBadge").textContent = tele.source;
 	$("modelLabel").textContent = tele.modelLabel || currentPack.response.model;
+	const currentModelLabel = getPackModelLabel(currentPack, tele);
 	$("modelVerdictLabel").textContent =
-		tele.mode === "jev-live"
+		(currentPack.mode || tele.mode) === "jev-live"
 			? "LIVE JEV (`choice`)"
 			: isFallbackOnly
 				? "LIVE FALLBACK (`noul`)"
@@ -480,30 +489,56 @@ function render() {
 		const pullPct = Math.round((d.probabilities.pull ?? 0) * 100);
 		const stayPct = Math.round((d.probabilities.stay ?? 0) * 100);
 		$("jevVerdict").textContent = `${d.choice.toUpperCase()} (${d.choice === "pull" ? pullPct : stayPct}%)`;
-		$("jevConfSub").textContent = `Confidence: ${Number(d.confidence ?? 0).toFixed(2)} · ${tele.modelLabel}`;
-
-		const flipped = dO1.choice !== dO2.choice;
-		const deltaPct = Math.round(Math.abs((dO1.probabilities.pull ?? 0) - (dO2.probabilities.pull ?? 0)) * 100);
-		$("flipVerdict").textContent = flipped ? `FLIPPED! (Δ ${deltaPct}%)` : `STABLE (Δ ${deltaPct}%)`;
-		$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
-		$("flipSub").textContent = flipped
-			? `o1 picks ${dO1.choice.toUpperCase()}, o2 flips to ${dO2.choice.toUpperCase()}`
-			: `Both o1 & o2 pick ${dO1.choice.toUpperCase()}`;
+		$("jevConfSub").textContent = `Confidence: ${Number(d.confidence ?? 0).toFixed(2)} · ${currentModelLabel}`;
 
 		$("choiceSummary").textContent = `pull: ${pullPct}% · stay: ${stayPct}%`;
 		$("barPull").style.width = `${Math.max(8, pullPct)}%`;
 		$("barPull").innerHTML = `<span>PULL ${pullPct}%</span>`;
 		$("barStay").style.width = `${Math.max(8, stayPct)}%`;
 		$("barStay").innerHTML = `<span>STAY ${stayPct}%</span>`;
-
-		const o1Pull = Math.round((dO1.probabilities.pull ?? 0) * 100);
-		const o2Pull = Math.round((dO2.probabilities.pull ?? 0) * 100);
-		$("chipO1").innerHTML = `o1 (Main first): <b>${dO1.choice.toUpperCase()} (pull ${o1Pull}%)</b>`;
-		$("chipO2").innerHTML = `o2 (Side first): <b>${dO2.choice.toUpperCase()} (pull ${o2Pull}%)</b>`;
 	} else {
 		$("jevVerdict").textContent = `${modelDir.toUpperCase()} (noul ${nPull.toFixed(2)} vs ${nStay.toFixed(2)})`;
 		$("jevConfSub").textContent = `Model: ${MODELS.freeFallback} (noul-only; no choice/score)`;
 
+		$("choiceSummary").textContent = `Not returned by ${MODELS.freeFallback} (noul-only model)`;
+		$("barPull").style.width = "50%";
+		$("barPull").innerHTML = "<span>N/A (NOUL-ONLY)</span>";
+		$("barStay").style.width = "50%";
+		$("barStay").innerHTML = "<span>N/A (NOUL-ONLY)</span>";
+	}
+
+	// Paired o1/o2 comparison is only meaningful when both orders were answered by
+	// the same model: Jev returns `choice`, while the free fallback is `noul`-only.
+	const o1Mode = tele.o1.mode || tele.mode;
+	const o2Mode = tele.o2.mode || tele.mode;
+	const pairMode = o1Mode === o2Mode ? o1Mode : "mixed";
+	const modeName = (m) =>
+		m === "jev-live" ? "Jev (choice)" : m === "free-live" ? "fallback (noul only)" : "cached Jev";
+	const chipFor = (label, pack, decision) => {
+		if (decision) {
+			const p = Math.round((decision.probabilities?.pull ?? 0) * 100);
+			return `${label}: <b>${decision.choice.toUpperCase()} (pull ${p}%)</b>`;
+		}
+		const p = Number(pack.response.answers.pull_noul?.noul ?? 0);
+		return `${label}: <b>pull_noul ${p.toFixed(2)}</b>`;
+	};
+	const mixedTag = (m) => (m === "jev-live" ? " · JEV" : " · FALLBACK");
+	$("chipO1").innerHTML = chipFor(
+		pairMode === "mixed" ? `o1 (Main first${mixedTag(o1Mode)})` : "o1 (Main first)",
+		tele.o1,
+		dO1,
+	);
+	$("chipO2").innerHTML = chipFor(
+		pairMode === "mixed" ? `o2 (Side first${mixedTag(o2Mode)})` : "o2 (Side first)",
+		tele.o2,
+		dO2,
+	);
+
+	if (pairMode === "mixed") {
+		$("flipVerdict").textContent = "NOT COMPARABLE";
+		$("flipVerdict").style.color = "#f59e0b";
+		$("flipSub").textContent = `o1 used ${modeName(o1Mode)}, o2 used ${modeName(o2Mode)}. An order-flip comparison needs the same model on both orders, so this pair is not scored.`;
+	} else if (pairMode === "free-live") {
 		const dir1 = getVerdictDirection(ansO1);
 		const dir2 = getVerdictDirection(ansO2);
 		const flipped = dir1 !== dir2;
@@ -512,14 +547,20 @@ function render() {
 		$("flipVerdict").textContent = flipped ? "NOUL FLIPPED" : "NOUL STABLE";
 		$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
 		$("flipSub").textContent = `o1 pull_noul=${p1.toFixed(2)}, o2 pull_noul=${p2.toFixed(2)} (${MODELS.freeFallback})`;
-
-		$("choiceSummary").textContent = `Not returned by ${MODELS.freeFallback} (noul-only model)`;
-		$("barPull").style.width = "50%";
-		$("barPull").innerHTML = "<span>N/A (NOUL-ONLY MODEL)</span>";
-		$("barStay").style.width = "50%";
-		$("barStay").innerHTML = "<span>SWITCH TO CACHED JEV ABOVE FOR CHOICE</span>";
-		$("chipO1").innerHTML = `o1 (${MODELS.freeFallback}): <b>pull_noul ${p1.toFixed(2)}</b>`;
-		$("chipO2").innerHTML = `o2 (${MODELS.freeFallback}): <b>pull_noul ${p2.toFixed(2)}</b>`;
+	} else if (dO1 && dO2) {
+		const flipped = dO1.choice !== dO2.choice;
+		const deltaPct = Math.round(
+			Math.abs((dO1.probabilities.pull ?? 0) - (dO2.probabilities.pull ?? 0)) * 100,
+		);
+		$("flipVerdict").textContent = flipped ? `FLIPPED! (Δ ${deltaPct}%)` : `STABLE (Δ ${deltaPct}%)`;
+		$("flipVerdict").style.color = flipped ? "#ef4444" : "#10b981";
+		$("flipSub").textContent = flipped
+			? `o1 picks ${dO1.choice.toUpperCase()}, o2 flips to ${dO2.choice.toUpperCase()}`
+			: `Both o1 & o2 pick ${dO1.choice.toUpperCase()}`;
+	} else {
+		$("flipVerdict").textContent = "NOT COMPARABLE";
+		$("flipVerdict").style.color = "#f59e0b";
+		$("flipSub").textContent = "One order is missing a typed decision; no paired comparison is shown.";
 	}
 
 	$("noulPullVal").textContent = nPull.toFixed(2);
@@ -563,15 +604,17 @@ function chooseAction(action) {
 	const round = ALL_ROUNDS[activeIndex];
 	userChoices[round.id] = action;
 	const tele = getActiveTelemetry(round);
-	const ans = tele[activeOrder].response.answers;
+	const pack = tele[activeOrder];
+	const ans = pack.response.answers;
 	const d = ans.decision;
 	const modelDir = getVerdictDirection(ans);
+	const modelLabel = getPackModelLabel(pack, tele);
 	sessionLog.push({
 		timestamp: new Date().toISOString(),
 		roundId: round.id,
 		order: activeOrder,
-		model: tele[activeOrder].response.model,
-		mode: tele.mode,
+		model: pack.response.model,
+		mode: pack.mode || tele.mode,
 		userChoice: action,
 		modelDirection: modelDir,
 		jevPullProbability: d ? d.probabilities.pull : null,
@@ -579,7 +622,7 @@ function chooseAction(action) {
 	render();
 	if (d) {
 		setStatus(
-			`You chose <b>${action.toUpperCase()}</b>. On order <code>${activeOrder}</code>, <code>${tele.modelLabel}</code> chose <b>${d.choice.toUpperCase()}</b> (${Math.round((d.probabilities[d.choice] ?? 0) * 100)}% probability).`,
+			`You chose <b>${action.toUpperCase()}</b>. On order <code>${activeOrder}</code>, <code>${modelLabel}</code> chose <b>${d.choice.toUpperCase()}</b> (${Math.round((d.probabilities[d.choice] ?? 0) * 100)}% probability).`,
 		);
 	} else {
 		setStatus(
@@ -603,25 +646,34 @@ async function runLiveDecision() {
 			querySingleOrder(round, "o1"),
 			querySingleOrder(round, "o2"),
 		]);
+		const mixed = r1.mode !== r2.mode;
+		const mode = mixed ? "mixed-live" : r1.mode;
+		const labelFor = (m) =>
+			m === "jev-live"
+				? "typesafe/jev-1.13 (live response)"
+				: "respan/span-01-lite (live fallback · noul only)";
+		const shortFor = (m) => (m === "jev-live" ? "JEV" : "FALLBACK");
 		telemetryViewMode = "live";
 		liveResults[round.id] = {
-			mode: r1.mode,
-			source:
-				r1.mode === "jev-live"
+			mode,
+			source: mixed
+				? `MIXED LIVE RESPONSE · o1 ${shortFor(r1.mode)} / o2 ${shortFor(r2.mode)}`
+				: r1.mode === "jev-live"
 					? "LIVE /alpha/decisions RESPONSE · typesafe/jev-1.13"
 					: "LIVE /alpha/decisions FALLBACK · respan/span-01-lite (NOUL ONLY)",
-			modelLabel:
-				r1.mode === "jev-live"
-					? "typesafe/jev-1.13 (live response)"
-					: "respan/span-01-lite (live fallback · noul only)",
-			o1: { request: r1.request, response: r1.response },
-			o2: { request: r2.request, response: r2.response },
+			modelLabel: mixed
+				? `MIXED MODELS · o1 ${labelFor(r1.mode)} · o2 ${labelFor(r2.mode)}`
+				: labelFor(r1.mode),
+			o1: { mode: r1.mode, request: r1.request, response: r1.response },
+			o2: { mode: r2.mode, request: r2.request, response: r2.response },
 		};
 		render();
 		setStatus(
-			r1.mode === "jev-live"
-				? "Live <code>typesafe/jev-1.13</code> response received for both o1 and o2."
-				: "Live <code>respan/span-01-lite</code> (noul-only fallback) response received. Cached <code>jev-1.13.0</code> examples are kept separate—use the toggle in the right panel to compare.",
+			mixed
+				? `Mixed live response: <code>o1</code> used ${shortFor(r1.mode)}, <code>o2</code> used ${shortFor(r2.mode)}. The paired order comparison is disabled because the two orders were answered by different models.`
+				: r1.mode === "jev-live"
+					? "Live <code>typesafe/jev-1.13</code> response received for both o1 and o2."
+					: "Live <code>respan/span-01-lite</code> (noul-only fallback) response received. Cached <code>jev-1.13.0</code> examples are kept separate—use the toggle in the right panel to compare.",
 		);
 	} catch (err) {
 		setStatus(err.message || "Live /alpha/decisions request failed.", true);

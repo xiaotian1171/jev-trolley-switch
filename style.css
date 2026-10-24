@@ -223,6 +223,14 @@ body {
   align-items: start;
 }
 
+.workspace > * {
+  min-width: 0;
+}
+
+#modelLabel {
+  overflow-wrap: anywhere;
+}
+
 .stage-card,
 .telemetry-card {
   background: var(--panel);
